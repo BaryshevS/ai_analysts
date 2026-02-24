@@ -1,0 +1,1 @@
+CREATE VIEW INFORMATION_SCHEMA.character_sets\n(\n    `character_set_name` String,\n    `CHARACTER_SET_NAME` String\n)\nSQL SECURITY INVOKER\nAS SELECT\n    arrayJoin([\'utf8\', \'utf8mb4\', \'ascii\', \'binary\']) AS character_set_name,\n    character_set_name AS CHARACTER_SET_NAME

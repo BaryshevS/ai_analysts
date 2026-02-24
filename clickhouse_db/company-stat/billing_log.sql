@@ -1,0 +1,1 @@
+CREATE TABLE `company-stat`.billing_log\n(\n    `transaction_id` String,\n    `user_id` UInt32,\n    `product_name` String,\n    `transaction_date` Date,\n    `amount` Decimal(9, 2),\n    `description` String\n)\nENGINE = MergeTree\nORDER BY (transaction_date, user_id)\nSETTINGS index_granularity = 8192

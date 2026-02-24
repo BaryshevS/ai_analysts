@@ -1,0 +1,10 @@
+**/__pycache__/
+**/.pytest_cache/
+/.idea/
+/.git/
+.env
+/logs/
+/.claude/
+/tmp/
+pass.txt
+.env.local

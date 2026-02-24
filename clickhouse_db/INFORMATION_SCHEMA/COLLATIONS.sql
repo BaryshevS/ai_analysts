@@ -1,0 +1,1 @@
+CREATE VIEW INFORMATION_SCHEMA.COLLATIONS\n(\n    `collation_name` String,\n    `COLLATION_NAME` String\n)\nSQL SECURITY INVOKER\nAS SELECT\n    name AS collation_name,\n    collation_name AS COLLATION_NAME\nFROM system.collations

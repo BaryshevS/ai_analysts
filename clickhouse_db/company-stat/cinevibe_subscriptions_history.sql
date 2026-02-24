@@ -1,0 +1,1 @@
+CREATE TABLE `company-stat`.cinevibe_subscriptions_history\n(\n    `user_id` UInt32,\n    `subscription_type` String,\n    `start_date` Date,\n    `end_date` Nullable(Date),\n    `payment_amount` Decimal(9, 2)\n)\nENGINE = MergeTree\nORDER BY (user_id, start_date)\nSETTINGS index_granularity = 8192

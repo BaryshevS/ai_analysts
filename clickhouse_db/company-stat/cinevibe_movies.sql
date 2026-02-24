@@ -1,0 +1,1 @@
+CREATE TABLE `company-stat`.cinevibe_movies\n(\n    `movie_id` UInt32,\n    `title` String,\n    `release_date` Date,\n    `genre` String,\n    `duration` UInt16\n)\nENGINE = MergeTree\nORDER BY movie_id\nSETTINGS index_granularity = 8192
