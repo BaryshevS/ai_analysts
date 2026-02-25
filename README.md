@@ -65,8 +65,9 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # Установка системных утилит (если не установлены)
+# Важно: curl необходим для работы с ClickHouse через HTTPS
 sudo apt update
-sudo apt install curl wget bash clickhouse-client
+sudo apt install curl wget bash
 ```
 
 **macOS:**
@@ -75,7 +76,8 @@ sudo apt install curl wget bash clickhouse-client
 pip install -r requirements.txt
 
 # Установка системных утилит (если не установлены)
-brew install curl wget bash clickhouse-client
+# Важно: curl необходим для работы с ClickHouse через HTTPS
+brew install curl wget bash
 ```
 
 **Windows:**
@@ -84,6 +86,7 @@ brew install curl wget bash clickhouse-client
 pip install -r requirements.txt
 
 # Для Windows большинство утилит можно установить через Chocolatey или использовать WSL
+# Важно: curl необходим для работы с ClickHouse через HTTPS
 # Установка через Chocolatey:
 choco install curl wget
 
@@ -119,6 +122,7 @@ REDASH_HOST=https://public.url
 **Linux/macOS:**
 ```bash
 # Экспорт DDL схем из ClickHouse
+# Внимание: вместо стандартного clickhouse-client используется curl для HTTPS подключения
 ./clickhouse_export_ddl.sh
 
 # Загрузка истории запросов из Redash
@@ -131,6 +135,7 @@ python update_query_snippets.py
 **Windows:**
 ```cmd
 # Экспорт DDL схем из ClickHouse
+# Внимание: вместо стандартного clickhouse-client используется curl для HTTPS подключения
 bash clickhouse_export_ddl.sh
 
 # Загрузка истории запросов из Redash
@@ -141,5 +146,13 @@ python update_query_snippets.py
 ```
 
 Примечание для пользователей Windows: Для запуска shell скриптов может потребоваться установка Git Bash, WSL или Cygwin.
+
+💡 **Информация о подключении к ClickHouse:** Вместо стандартного клиента ClickHouse используется HTTP API через curl для обеспечения корректного HTTPS подключения. Пример используемого запроса:
+```bash
+curl -u username:password \
+  -X POST \
+  -d "SELECT 1" \
+  https://your-clickhouse-host.com
+```
 
 Готово! Теперь проект полностью настроен и готов к использованию.

@@ -22,18 +22,11 @@ if [ -z "$DB_USER" ] || [ -z "$DB_PASSWORD" ] || [ -z "$CLICKHOUSE_HOSTS" ]; the
     exit 1
 fi
 
-# Получение первого хоста и порта из списка
+# Получение первого хоста из списка
 CLICKHOUSE_HOST=$(echo $CLICKHOUSE_HOSTS | cut -d',' -f1 | cut -d':' -f1)
-CLICKHOUSE_PORT=$(echo $CLICKHOUSE_HOSTS | cut -d',' -f1 | cut -d':' -f2)
-
-# Если порт не указан, используем порт по умолчанию
-if [ -z "$CLICKHOUSE_PORT" ]; then
-    CLICKHOUSE_PORT="9000"
-fi
 
 # Параметры подключения из переменных окружения
-CH_HOST="$CLICKHOUSE_HOST"
-CH_PORT="$CLICKHOUSE_PORT"
+CH_HOST="https://$CLICKHOUSE_HOST"
 CH_USER="$DB_USER"
 CH_PASSWORD="$DB_PASSWORD"
 
@@ -48,53 +41,26 @@ EXPORT_DIR="clickhouse_db"
 mkdir -p "$EXPORT_DIR"
 
 echo "🚀 Начинаем экспорт DDL схем из ClickHouse..."
-echo "Хост: $CH_HOST:$CH_PORT"
+echo "Хост: $CH_HOST"
 echo "Пользователь: $CH_USER"
 echo "Директория экспорта: $EXPORT_DIR"
 echo ""
 
-# Получаем список баз (исключая системные)
-echo "📋 Получаем список баз данных..."
-databases=$(clickhouse-client \
-    --host "$CH_HOST" \
-    --port "$CH_PORT" \
-    --user "$CH_USER" \
-    --password "$CH_PASSWORD" \
-    --query="SELECT name FROM system.databases
-             WHERE name NOT IN ('system', 'information_schema');" 2>&1)
-
-# Проверяем код возврата и выводим ошибку если есть
-if [ $? -ne 0 ]; then
-    echo "❌ Ошибка при получении списка баз данных:"
-    echo "$databases"
-    exit 1
-fi
-
-# Проверяем, что список баз не пустой
-if [ -z "$databases" ]; then
-    echo "❌ Список баз данных пуст"
-    exit 1
-fi
-
-# Преобразуем в массив для подсчета
-db_array=($databases)
-total_dbs=${#db_array[@]}
-echo "📊 Найдено баз данных: $total_dbs"
-echo ""
-
-# Список проблемных таблиц, которые могут вызывать таймауты
-#PROBLEMATIC_TABLES=("INFORMATION_SCHEMA.COLUMNS" "INFORMATION_SCHEMA.columns")
-PROBLEMATIC_TABLES=()
-
-# Функция для выполнения команды ClickHouse с повторными попытками
-run_with_retry() {
-    local cmd="$1"
+# Функция для выполнения HTTP-запроса к ClickHouse с повторными попытками
+run_clickhouse_query() {
+    local query="$1"
     local max_retries=${2:-$MAX_RETRIES}
     local retry_count=0
 
     while [ $retry_count -lt $max_retries ]; do
-        # Выполняем команду
-        result=$(eval "$cmd" 2>&1)
+        # Выполняем запрос
+        result=$(curl -s -u "$CH_USER:$CH_PASSWORD" \
+            -H "Content-Type: text/plain; charset=utf-8" \
+            --max-time $CLICKHOUSE_TIMEOUT \
+            -X POST \
+            -d "$query" \
+            "$CH_HOST" 2>&1)
+
         exit_code=$?
 
         # Проверяем успешность выполнения
@@ -116,6 +82,32 @@ run_with_retry() {
     return $exit_code
 }
 
+# Получаем список баз (исключая системные)
+echo "📋 Получаем список баз данных..."
+databases=$(run_clickhouse_query "SELECT name FROM system.databases WHERE name NOT IN ('system', 'information_schema');")
+
+# Проверяем код возврата и выводим ошибку если есть
+if [ $? -ne 0 ]; then
+    echo "❌ Ошибка при получении списка баз данных:"
+    echo "$databases"
+    exit 1
+fi
+
+# Проверяем, что список баз не пустой
+if [ -z "$databases" ]; then
+    echo "❌ Список баз данных пуст"
+    exit 1
+fi
+
+# Преобразуем в массив для подсчета
+db_array=($databases)
+total_dbs=${#db_array[@]}
+echo "📊 Найдено баз данных: $total_dbs"
+echo ""
+
+# Список проблемных таблиц, которые могут вызывать таймауты
+PROBLEMATIC_TABLES=()
+
 # Функция для альтернативного экспорта таблицы через system.tables
 alternative_export() {
     local db=$1
@@ -125,14 +117,7 @@ alternative_export() {
     echo "    🔧 Пытаюсь экспортировать через альтернативный метод..."
 
     # Получаем DDL из system.tables с более надежным запросом и повторными попытками
-    cmd="timeout -k 5 $((CLICKHOUSE_TIMEOUT * 2)) clickhouse-client \
-        --host \"$CH_HOST\" \
-        --port \"$CH_PORT\" \
-        --user \"$CH_USER\" \
-        --password \"$CH_PASSWORD\" \
-        --query=\"SELECT create_table_query FROM system.tables WHERE database = '\$db' AND name = '\$table' AND create_table_query != '';\" 2>&1"
-
-    table_ddl=$(run_with_retry "$cmd" 2)
+    table_ddl=$(run_clickhouse_query "SELECT create_table_query FROM system.tables WHERE database = '$db' AND name = '$table' AND create_table_query != '';" 2)
 
     # Проверяем код возврата и содержимое
     if [ $? -eq 0 ] && [ -n "$table_ddl" ] && [[ ! "$table_ddl" == *"Error"* ]] && [[ ! "$table_ddl" == *"Exception"* ]] && [ "$table_ddl" != "''" ]; then
@@ -143,128 +128,7 @@ alternative_export() {
     else
         echo "    ⚠️  Альтернативный метод не удался:"
         echo "    $table_ddl"
-
-        # Пробуем получить структуру таблицы через DESCRIBE с другим форматом
-        echo "    🔍 Пробую получить структуру через DESCRIBE..."
-        cmd="timeout -k 5 $((CLICKHOUSE_TIMEOUT * 2)) clickhouse-client \
-            --host \"$CH_HOST\" \
-            --port \"$CH_PORT\" \
-            --user \"$CH_USER\" \
-            --password \"$CH_PASSWORD\" \
-            --database \"$db\" \
-            --query=\"DESCRIBE TABLE \\\`\$table\\\` FORMAT Vertical;\" 2>&1"
-
-        table_structure=$(run_with_retry "$cmd" 2)
-
-        # Если Vertical формат не работает, пробуем TabSeparated
-        if [ $? -ne 0 ] || [ -z "$table_structure" ] || [[ "$table_structure" == *"Error"* ]] || [[ "$table_structure" == *"Exception"* ]]; then
-            cmd="timeout -k 5 $((CLICKHOUSE_TIMEOUT * 2)) clickhouse-client \
-                --host \"$CH_HOST\" \
-                --port \"$CH_PORT\" \
-                --user \"$CH_USER\" \
-                --password \"$CH_PASSWORD\" \
-                --database \"$db\" \
-                --query=\"DESCRIBE TABLE \\\`\$table\\\` FORMAT TabSeparated;\" 2>&1"
-
-            table_structure=$(run_with_retry "$cmd" 2)
-        fi
-
-        if [ $? -eq 0 ] && [ -n "$table_structure" ] && [[ ! "$table_structure" == *"Error"* ]] && [[ ! "$table_structure" == *"Exception"* ]]; then
-            echo "    ✅ Получена структура таблицы. Создаю минимальный DDL..."
-            # Создаем минимальный DDL на основе структуры
-            {
-                echo "-- Альтернативный экспорт таблицы $db.$table"
-                echo "-- Создан на основе DESCRIBE TABLE"
-                echo "-- Дата экспорта: $(date)"
-                echo ""
-                echo "CREATE TABLE IF NOT EXISTS \`$db\`.\`$table\` ("
-
-                # Обрабатываем структуру таблицы правильно
-                echo "$table_structure" | while IFS= read -r line; do
-                    # Пропускаем пустые строки и заголовки
-                    if [ -n "$line" ] && [[ ! "$line" =~ ^[[:space:]]*$ ]] && [[ ! "$line" =~ ^-+$ ]] && [[ ! "$line" =~ ^(name[[:space:]]+type|row_|database|table|engine) ]]; then
-                        # Парсим строку в формате Vertical (ключ: значение)
-                        if [[ "$line" == *:* ]]; then
-                            name=$(echo "$line" | cut -d':' -f1 | xargs)
-                            type=$(echo "$line" | cut -d':' -f2- | xargs)
-
-                            # Пропускаем служебные поля
-                            if [ "$name" != "database" ] && [ "$name" != "table" ] && [ "$name" != "engine" ] && [ "$name" != "uuid" ]; then
-                                echo "    $name $type,"
-                            fi
-                        # Парсим строку в формате TabSeparated
-                        elif [[ "$line" == *$'\t'* ]]; then
-                            name=$(echo "$line" | cut -f1)
-                            type=$(echo "$line" | cut -f2)
-
-                            # Пропускаем служебные поля
-                            if [ -n "$name" ] && [ "$name" != "name" ] && [ "$name" != "type" ]; then
-                                echo "    $name $type,"
-                            fi
-                        fi
-                    fi
-                done | sed '$ s/,$//'  # Убираем последнюю запятую
-
-                echo ")"
-
-                # Определяем движок на основе имени таблицы или используем стандартный
-                if [[ "$table" == *"_mv" ]] || [[ "$table" == *"view"* ]] || [[ "$table" == *"View"* ]]; then
-                    echo "ENGINE = MaterializedView"
-                elif [[ "$table" == *"_stream" ]]; then
-                    echo "ENGINE = Kafka()"
-                elif [[ "$table" == *"buffer"* ]]; then
-                    echo "ENGINE = Buffer()"
-                else
-                    echo "ENGINE = MergeTree()"
-                fi
-
-                echo "ORDER BY tuple();"  # Минимальная сортировка
-                echo ";"
-            } > "$output_file"
-
-            # Проверяем, что файл был создан и не пустой
-            if [ -s "$output_file" ]; then
-                echo "    ✅ Альтернативный экспорт завершен успешно"
-                return 0
-            else
-                # Если файл пустой, создаем минимальный шаблон
-                {
-                    echo "-- Альтернативный экспорт таблицы $db.$table"
-                    echo "-- Не удалось получить полную структуру таблицы"
-                    echo "-- Дата экспорта: $(date)"
-                    echo ""
-                    echo "CREATE TABLE IF NOT EXISTS \`$db\`.\`$table\` ("
-                    echo "    -- Структура таблицы не определена"
-                    echo "    id UInt64,"
-                    echo "    created_at DateTime DEFAULT now()"
-                    echo ") ENGINE = MergeTree()"
-                    echo "ORDER BY tuple();"
-                } > "$output_file"
-                echo "    ⚠️  Создан минимальный шаблон таблицы"
-                return 0
-            fi
-        else
-            echo "    ❌ DESCRIBE также не удался:"
-            echo "    $table_structure"
-
-            # Создаем минимальный шаблон как последний резорт
-            {
-                echo "-- Альтернативный экспорт таблицы $db.$table"
-                echo "-- Не удалось получить структуру таблицы"
-                echo "-- Дата экспорта: $(date)"
-                echo "-- Ошибка DESCRIBE: $table_structure"
-                echo ""
-                echo "CREATE TABLE IF NOT EXISTS \`$db\`.\`$table\` ("
-                echo "    -- Структура таблицы не определена из-за ошибки"
-                echo "    id UInt64,"
-                echo "    created_at DateTime DEFAULT now(),"
-                echo "    error_message String DEFAULT 'Structure could not be retrieved'"
-                echo ") ENGINE = MergeTree()"
-                echo "ORDER BY tuple();"
-            } > "$output_file"
-            echo "    ⚠️  Создан шаблон с ошибкой вместо реальной структуры"
-            return 0
-        fi
+        return 1
     fi
 }
 
@@ -281,15 +145,7 @@ for db in $databases; do
 
     # Получаем список таблиц с таймаутом и повторными попытками
     echo "  📋 Получаем список таблиц..."
-    cmd="timeout -k 5 $CLICKHOUSE_TIMEOUT clickhouse-client \
-        --host \"$CH_HOST\" \
-        --port \"$CH_PORT\" \
-        --user \"$CH_USER\" \
-        --password \"$CH_PASSWORD\" \
-        --database \"$db\" \
-        --query=\"SHOW TABLES;\" 2>&1"
-
-    table_list=$(run_with_retry "$cmd" 2)
+    table_list=$(run_clickhouse_query "SHOW TABLES FROM \`$db\`;" 2)
 
     # Проверяем код возврата
     if [ $? -ne 0 ]; then
@@ -348,13 +204,7 @@ for db in $databases; do
             fi
 
             # Экспортируем DDL с таймаутом
-            table_ddl=$(timeout -k 5 $CLICKHOUSE_TIMEOUT clickhouse-client \
-                --host "$CH_HOST" \
-                --port "$CH_PORT" \
-                --user "$CH_USER" \
-                --password "$CH_PASSWORD" \
-                --database "$db" \
-                --query="SHOW CREATE TABLE \`$table\`;" 2>&1)
+            table_ddl=$(run_clickhouse_query "SHOW CREATE TABLE \`$db\`.\`$table\`;" 2)
 
             # Проверяем код возврата
             if [ $? -ne 0 ]; then
