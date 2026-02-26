@@ -126,10 +126,10 @@ REDASH_HOST=https://public.url
 ./clickhouse_export_ddl.sh
 
 # Загрузка истории запросов из Redash
-python update_queries.py
+python redash_export_query.py
 
 # Загрузка сниппетов запросов из Redash
-python update_query_snippets.py
+python redash_export_snippets.py
 ```
 
 **Windows:**
@@ -139,10 +139,10 @@ python update_query_snippets.py
 bash clickhouse_export_ddl.sh
 
 # Загрузка истории запросов из Redash
-python update_queries.py
+python redash_export_query.py
 
 # Загрузка сниппетов запросов из Redash
-python update_query_snippets.py
+python redash_export_snippets.py
 ```
 
 Примечание для пользователей Windows: Для запуска shell скриптов может потребоваться установка Git Bash, WSL или Cygwin.
