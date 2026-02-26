@@ -154,5 +154,3 @@ curl -u username:password \
   -d "SELECT 1" \
   https://your-clickhouse-host.com
 ```
-
-Готово! Теперь проект полностью настроен и готов к использованию.
