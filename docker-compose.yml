@@ -1,0 +1,203 @@
+version: '3.8'
+
+x-redash-environment: &redash-environment
+  REDASH_HOST: ${REDASH_HOST}
+  REDASH_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres/redash
+  REDASH_REDIS_URL: redis://redis:6379/0
+  REDASH_SECRET_KEY: ${REDASH_TOKEN}
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: redash
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      default:
+        ipv4_address: 172.20.0.2
+
+  redis:
+    image: redis:7
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      default:
+        ipv4_address: 172.20.0.3
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_USER: ${DB_USER}
+      CLICKHOUSE_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      default:
+        ipv4_address: 172.20.0.4
+
+  clickhouse-init:
+    image: curlimages/curl:latest
+    command: >
+      sh -c "
+        echo 'Waiting for ClickHouse...' &&
+        until curl -s http://clickhouse:8123/ping; do sleep 2; done &&
+        echo 'Creating database company-stat...' &&
+        curl -u ${DB_USER}:${DB_PASSWORD} -X POST http://clickhouse:8123/ --data-binary 'CREATE DATABASE IF NOT EXISTS `company-stat`'
+      "
+    environment:
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      default:
+        ipv4_address: 172.20.0.11
+
+  redash-db-init:
+    image: redash/redash:latest
+    command: create_db
+    environment:
+      <<: *redash-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      default:
+        ipv4_address: 172.20.0.8
+
+  redash-create-org:
+    image: redash/redash:latest
+    command: >
+      sh -c "python manage.py organizations create default || echo 'Organization already exists'"
+    environment:
+      <<: *redash-environment
+    depends_on:
+      redash-db-init:
+        condition: service_completed_successfully
+    restart: "no"
+    networks:
+      default:
+        ipv4_address: 172.20.0.9
+
+  redash-create-admin:
+    image: redash/redash:latest
+    command: >
+      sh -c "python manage.py users create \"$$REDASH_ADMIN_USER\" \"Admin\" --password \"$$REDASH_ADMIN_PASS\" --admin || echo 'Admin creation failed, will do manually later'"
+    environment:
+      <<: *redash-environment
+      REDASH_ADMIN_USER: ${REDASH_WEB_USER}
+      REDASH_ADMIN_PASS: ${REDASH_WEB_PASS}
+    depends_on:
+      redash-create-org:
+        condition: service_completed_successfully
+    restart: "no"
+    networks:
+      default:
+        ipv4_address: 172.20.0.10
+
+  redash-server:
+    image: redash/redash:latest
+    command: server
+    ports:
+      - "8080:5000"
+    environment:
+      <<: *redash-environment
+    depends_on:
+      redash-create-admin:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: 172.20.0.5
+
+  redash-scheduler:
+    image: redash/redash:latest
+    command: scheduler
+    environment:
+      <<: *redash-environment
+    depends_on:
+      redash-create-admin:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: 172.20.0.6
+
+  redash-worker:
+    image: redash/redash:latest
+    command: worker
+    environment:
+      <<: *redash-environment
+    depends_on:
+      redash-create-admin:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: 172.20.0.7
+
+volumes:
+  postgres-data:
+  redis-data:
+  clickhouse-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+
+#Посмотреть какие сети уже есть
+#for net in $(docker network ls -q); do
+#    echo "Сеть: $(docker network inspect $net --format '{{.Name}}')"
+#    docker network inspect $net --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+#    echo "---"
+#done
+
+#Посмотреть какие сети уже есть
+#for net in $(docker network ls -q); do
+#    echo "Сеть: $(docker network inspect $net --format '{{.Name}}')"
+#    docker network inspect $net --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+#    echo "---"
+#done

@@ -1,1 +1,0 @@
-CREATE TABLE `company-stat`.cinevibe_views_likes\n(\n    `user_id` UInt32,\n    `movie_id` UInt32,\n    `view_date` Date,\n    `like_status` String DEFAULT \'\'\n)\nENGINE = MergeTree\nORDER BY (user_id, movie_id, view_date)\nSETTINGS index_granularity = 8192

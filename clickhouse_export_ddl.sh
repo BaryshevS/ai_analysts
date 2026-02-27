@@ -22,11 +22,27 @@ if [ -z "$DB_USER" ] || [ -z "$DB_PASSWORD" ] || [ -z "$CLICKHOUSE_HOSTS" ]; the
     exit 1
 fi
 
-# Получение первого хоста из списка
-CLICKHOUSE_HOST=$(echo $CLICKHOUSE_HOSTS | cut -d',' -f1 | cut -d':' -f1)
+# Получение первого хоста из списка (включая порт, если указан)
+CLICKHOUSE_HOST_PORT=$(echo $CLICKHOUSE_HOSTS | cut -d',' -f1)
+
+# Определяем протокол (HTTP или HTTPS) в зависимости от переменной CLICKHOUSE_SECURE
+# Если переменная не установлена, проверяем наличие порта 8123 для выбора HTTP по умолчанию
+if [ "$CLICKHOUSE_SECURE" = "true" ]; then
+    PROTOCOL="https"
+elif [ "$CLICKHOUSE_SECURE" = "false" ]; then
+    PROTOCOL="http"
+else
+    # По умолчанию используем http для порта 8123, иначе https
+    PORT=$(echo "$CLICKHOUSE_HOST_PORT" | cut -d':' -f2)
+    if [ "$PORT" = "8123" ] || [ -z "$PORT" ]; then
+        PROTOCOL="http"
+    else
+        PROTOCOL="https"
+    fi
+fi
 
 # Параметры подключения из переменных окружения
-CH_HOST="https://$CLICKHOUSE_HOST"
+CH_HOST="$PROTOCOL://$CLICKHOUSE_HOST_PORT"
 CH_USER="$DB_USER"
 CH_PASSWORD="$DB_PASSWORD"
 

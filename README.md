@@ -147,6 +147,35 @@ python redash_export_snippets.py
 
 Примечание для пользователей Windows: Для запуска shell скриптов может потребоваться установка Git Bash, WSL или Cygwin.
 
+### 7. Установка Docker (дополнительно)
+
+Если вам нужно установить Docker для работы с контейнерами, в проекте предоставлены скрипты для автоматической установки на различные операционные системы:
+
+**Linux (Ubuntu/Debian):**
+```bash
+# Сделать скрипт исполняемым и запустить его
+chmod +x install_docker_linux.sh
+./install_docker_linux.sh
+```
+
+**macOS:**
+```bash
+# Сделать скрипт исполняемым и запустить его
+chmod +x install_docker_macos.sh
+./install_docker_macos.sh
+```
+
+**Windows:**
+Для Windows рекомендуется использовать PowerShell:
+```powershell
+# Запустить PowerShell скрипт
+.\install_docker_win.ps1
+```
+Или в командной строке с помощью bash (если установлен Git Bash, WSL или Cygwin):
+```cmd
+bash install_docker_win_powershell.sh
+```
+
 💡 **Информация о подключении к ClickHouse:** Вместо стандартного клиента ClickHouse используется HTTP API через curl для обеспечения корректного HTTPS подключения. Пример используемого запроса:
 ```bash
 curl -u username:password \

@@ -1,1 +1,0 @@
-CREATE TABLE `company-stat`.eventgo_events\n(\n    `event_id` UInt32,\n    `title` String,\n    `event_date` Date,\n    `category` String,\n    `base_price` Decimal(9, 2),\n    `venue` String\n)\nENGINE = MergeTree\nORDER BY event_id\nSETTINGS index_granularity = 8192

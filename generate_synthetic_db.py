@@ -16,22 +16,207 @@ import datetime
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
-from clickhouse_driver import Client
 import hashlib
+import requests
 
 # Load environment variables
 load_dotenv()
 
 # Database connection parameters
-DB_HOST = os.getenv('CLICKHOUSE_HOSTS', '192.168.9.52:9000').split(':')[0]
-DB_PORT = int(os.getenv('CLICKHOUSE_HOSTS', '192.168.9.52:9000').split(':')[1])
-DB_USER = os.getenv('DB_USER', 'default')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
+CLICKHOUSE_HOSTS = os.getenv('CLICKHOUSE_HOSTS', 'localhost:8123')
+CLICKHOUSE_SECURE = os.getenv('CLICKHOUSE_SECURE', 'false').lower() == 'true'
+DB_HOST = CLICKHOUSE_HOSTS.split(':')[0]
+DB_PORT = int(CLICKHOUSE_HOSTS.split(':')[1]) if ':' in CLICKHOUSE_HOSTS else 8123
+DB_USER = os.getenv('DB_USER', 'click_ro')
+DB_PASSWORD = os.getenv('DB_PASSWORD', '457DfeoiwdW')
 DB_NAME = os.getenv('CLICKHOUSE_DB', 'company-stat')
+
+class ClickHouseHTTPClient:
+    def __init__(self, host, port, user, password, database):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.database = database
+        # Use HTTPS if CLICKHOUSE_SECURE is true
+        protocol = "https" if CLICKHOUSE_SECURE else "http"
+        self.url = f"{protocol}://{host}:{port}"
+        self.base_url = self.url
+
+    def execute(self, query, data=None):
+        """Execute a query and return results"""
+        headers = {
+            'Content-Type': 'text/plain; charset=utf-8',
+        }
+
+        # Add authentication
+        auth = (self.user, self.password) if self.user and self.password else None
+
+        # Add database parameter to URL
+        url_with_db = f"{self.url}?database={self.database}"
+
+        # Process query to ensure proper database qualification
+        processed_query = self._qualify_table_names(query)
+
+        # Debug output
+        # print(f"DEBUG: URL: {url_with_db}")
+        # print(f"DEBUG: Query: {processed_query}")
+
+        try:
+            if data:
+                # For INSERT queries with data
+                full_query = processed_query
+                if isinstance(data, list) and len(data) > 0:
+                    # Convert data to VALUES format
+                    if processed_query.strip().upper().endswith('VALUES'):
+                        values_lines = []
+                        for row in data:
+                            if isinstance(row, (tuple, list)):
+                                # Escape single quotes and wrap strings in single quotes
+                                formatted_values = []
+                                for val in row:
+                                    if isinstance(val, str):
+                                        # Escape single quotes by doubling them
+                                        escaped_val = val.replace("'", "''")
+                                        formatted_values.append(f"'{escaped_val}'")
+                                    elif val is None:
+                                        formatted_values.append('NULL')
+                                    else:
+                                        formatted_values.append(str(val))
+                                values_lines.append(f"({', '.join(formatted_values)})")
+                        full_query = processed_query + " " + ", ".join(values_lines)
+                    else:
+                        # For other INSERT formats
+                        full_query = processed_query
+
+                response = requests.post(
+                    url_with_db,
+                    headers=headers,
+                    auth=auth,
+                    data=full_query.encode('utf-8'),
+                    timeout=30
+                )
+            else:
+                response = requests.post(
+                    url_with_db,
+                    headers=headers,
+                    auth=auth,
+                    data=processed_query.encode('utf-8'),
+                    timeout=30
+                )
+
+            # Debug output
+            # print(f"DEBUG: Response status: {response.status_code}")
+            # print(f"DEBUG: Response text: {response.text}")
+
+            response.raise_for_status()
+
+            # For SELECT queries, return parsed results
+            if processed_query.strip().upper().startswith(('SELECT', 'WITH')):
+                if response.text.strip():
+                    # Parse TSV response
+                    lines = response.text.strip().split('\n')
+                    results = []
+                    for line in lines:
+                        if line.strip():
+                            # Split by tab, handling escaped tabs if needed
+                            values = line.split('\t')
+                            # Convert types appropriately
+                            converted_row = []
+                            for val in values:
+                                if val.lower() in ('null', ''):
+                                    converted_row.append(None)
+                                elif val.isdigit():
+                                    converted_row.append(int(val))
+                                else:
+                                    # Try to convert to float if possible
+                                    try:
+                                        converted_row.append(float(val))
+                                    except ValueError:
+                                        converted_row.append(val)
+                            if len(converted_row) >= 1:
+                                if len(converted_row) == 1:
+                                    results.append(converted_row[0])
+                                else:
+                                    results.append(tuple(converted_row))
+                            else:
+                                results.append(None)
+                    return results
+                return []
+            else:
+                # For other queries, return success
+                return True
+
+        except requests.exceptions.RequestException as e:
+            # Debug output
+            # print(f"DEBUG: RequestException: {e}")
+            raise Exception(f"ClickHouse HTTP request failed: {e}")
+
+    def _qualify_table_names(self, query):
+        """Qualify table names with database name"""
+        # List of table names that need to be qualified
+        table_names = [
+            'billing_log',
+            'eventgo_ticket_purchases',
+            'cinevibe_views_likes',
+            'cinevibe_subscriptions_history',
+            'eventgo_events',
+            'cinevibe_movies',
+            'eventgo_users',
+            'cinevibe_users'
+        ]
+
+        qualified_query = query
+        # Escape database name if it contains special characters like hyphens
+        escaped_database = self.database
+        if '-' in self.database:
+            escaped_database = f'`{self.database}`'
+
+        for table_name in table_names:
+            # Replace table names with qualified names (database.table)
+            # Handle common SQL patterns
+            patterns = [
+                f' {table_name} ',
+                f' {table_name}\n',
+                f' {table_name}\t',
+                f' {table_name},',
+                f' {table_name}\)',
+                f'\n{table_name} ',
+                f'\n{table_name}\n',
+                f'\n{table_name}\t',
+                f'\n{table_name},',
+                f'\n{table_name}\)',
+                f'\t{table_name} ',
+                f'\t{table_name}\n',
+                f'\t{table_name}\t',
+                f'\t{table_name},',
+                f'\t{table_name}\)',
+                f',{table_name} ',
+                f',{table_name}\n',
+                f',{table_name}\t',
+                f',{table_name},',
+                f',{table_name}\)',
+                f'\({table_name} ',
+                f'\({table_name}\n',
+                f'\({table_name}\t',
+                f'\({table_name},',
+                f'\({table_name}\)',
+                f'`{table_name}`',
+            ]
+
+            for pattern in patterns:
+                replacement = pattern.replace(table_name, f'{escaped_database}.{table_name}')
+                qualified_query = qualified_query.replace(pattern, replacement)
+
+        return qualified_query
+
+    def insert(self, query, data):
+        """Insert data into ClickHouse"""
+        return self.execute(query, data)
 
 def get_db_client():
     """Create and return a ClickHouse database client"""
-    return Client(
+    return ClickHouseHTTPClient(
         host=DB_HOST,
         port=DB_PORT,
         user=DB_USER,
@@ -411,7 +596,10 @@ def generate_cinevibe_subscriptions(client):
     for user_id in range(1, 1001):  # 1000 users
         # Each user may have 1-5 subscription periods
         num_periods = random.randint(1, 5)
-        user_reg_date = client.execute("SELECT reg_date FROM cinevibe_users WHERE user_id = {}".format(user_id))[0][0]
+        user_reg_date_result = client.execute("SELECT reg_date FROM cinevibe_users WHERE user_id = {}".format(user_id))
+        user_reg_date_str = user_reg_date_result[0] if isinstance(user_reg_date_result, list) and len(user_reg_date_result) > 0 else user_reg_date_result
+        # Convert string date to datetime.date object
+        user_reg_date = datetime.datetime.strptime(str(user_reg_date_str), '%Y-%m-%d').date()
 
         current_date = user_reg_date + timedelta(days=random.randint(1, 30))  # Start subscription after registration
 
@@ -456,7 +644,12 @@ def generate_cinevibe_subscriptions(client):
                     billing_current = datetime.date(next_year, next_month, 1)
 
             # Set next subscription start date
-            current_date = (end_date_sub or end_date) + timedelta(days=random.randint(1, 30))
+            next_start_base = end_date_sub or end_date
+            if next_start_base is not None:
+                current_date = next_start_base + timedelta(days=random.randint(1, 30))
+            else:
+                # If end_date_sub is None (still active), we shouldn't create another subscription
+                break
 
     # Insert subscription data
     client.execute("INSERT INTO cinevibe_subscriptions_history VALUES", subscriptions_data)
@@ -477,11 +670,21 @@ def generate_cinevibe_views(client):
 
     # Get all movies with their release dates
     movies = client.execute("SELECT movie_id, release_date FROM cinevibe_movies")
-    movies_dict = {movie[0]: movie[1] for movie in movies}
+    movies_dict = {}
+    for movie in movies:
+        movie_id, release_date_str = movie
+        # Convert string date to datetime.date object
+        release_date = datetime.datetime.strptime(str(release_date_str), '%Y-%m-%d').date()
+        movies_dict[movie_id] = release_date
 
     # Get all users with their registration dates
     users = client.execute("SELECT user_id, reg_date FROM cinevibe_users")
-    users_dict = {user[0]: user[1] for user in users}
+    users_dict = {}
+    for user in users:
+        user_id, reg_date_str = user
+        # Convert string date to datetime.date object
+        reg_date = datetime.datetime.strptime(str(reg_date_str), '%Y-%m-%d').date()
+        users_dict[user_id] = reg_date
 
     like_statuses = ['like', 'dislike']  # Only like or dislike, no empty values
 
@@ -557,11 +760,21 @@ def generate_eventgo_purchases(client):
 
     # Get all events with their dates and prices
     events = client.execute("SELECT event_id, event_date, base_price FROM eventgo_events")
-    events_dict = {event[0]: (event[1], event[2]) for event in events}
+    events_dict = {}
+    for event in events:
+        event_id, event_date_str, base_price = event
+        # Convert string date to datetime.date object
+        event_date = datetime.datetime.strptime(str(event_date_str), '%Y-%m-%d').date()
+        events_dict[event_id] = (event_date, base_price)
 
     # Get all users with their registration dates
     users = client.execute("SELECT user_id, reg_date FROM eventgo_users")
-    users_dict = {user[0]: user[1] for user in users}
+    users_dict = {}
+    for user in users:
+        user_id, reg_date_str = user
+        # Convert string date to datetime.date object
+        reg_date = datetime.datetime.strptime(str(reg_date_str), '%Y-%m-%d').date()
+        users_dict[user_id] = reg_date
 
     # Create a more even distribution by dividing the time period into months
     # and ensuring each user's purchases are distributed across specific months
@@ -610,7 +823,7 @@ def generate_eventgo_purchases(client):
                 # Fallback to original logic if window is not valid
                 days_before_event = (event_date - user_reg_date).days
                 if days_before_event > 0:
-                    days_after_reg = random.randint(0, days_before_event)
+                    days_after_reg = random.randint(0, min(days_before_event, (end_date - user_reg_date).days))
                     purchase_date = user_reg_date + timedelta(days=days_after_reg)
                 else:
                     purchase_date = user_reg_date
@@ -650,7 +863,8 @@ def validate_data_consistency(client):
             SELECT msisdn FROM eventgo_users
         )
     """
-    overlap_count = client.execute(overlap_query)[0][0]
+    overlap_result = client.execute(overlap_query)
+    overlap_count = overlap_result[0] if isinstance(overlap_result, list) and len(overlap_result) > 0 else overlap_result
     expected_overlap = 200  # 20% of 1000
     print(f"  📱 Phone number overlap: {overlap_count}/{expected_overlap} (expected)")
 
@@ -662,7 +876,8 @@ def validate_data_consistency(client):
         JOIN cinevibe_users u ON v.user_id = u.user_id
         WHERE v.view_date < u.reg_date
     """
-    invalid_views = client.execute(invalid_views_query)[0][0]
+    invalid_views_result = client.execute(invalid_views_query)
+    invalid_views = invalid_views_result[0] if isinstance(invalid_views_result, list) and len(invalid_views_result) > 0 else invalid_views_result
     print(f"  👁️  Invalid views (before registration): {invalid_views} (should be 0)")
 
     # For CineVibe subscriptions
@@ -672,7 +887,8 @@ def validate_data_consistency(client):
         JOIN cinevibe_users u ON s.user_id = u.user_id
         WHERE s.start_date < u.reg_date
     """
-    invalid_subs = client.execute(invalid_subs_query)[0][0]
+    invalid_subs_result = client.execute(invalid_subs_query)
+    invalid_subs = invalid_subs_result[0] if isinstance(invalid_subs_result, list) and len(invalid_subs_result) > 0 else invalid_subs_result
     print(f"  💳 Invalid subscriptions (before registration): {invalid_subs} (should be 0)")
 
     # For EventGo purchases
@@ -682,7 +898,8 @@ def validate_data_consistency(client):
         JOIN eventgo_users u ON p.user_id = u.user_id
         WHERE p.purchase_date < u.reg_date
     """
-    invalid_purchases = client.execute(invalid_purchases_query)[0][0]
+    invalid_purchases_result = client.execute(invalid_purchases_query)
+    invalid_purchases = invalid_purchases_result[0] if isinstance(invalid_purchases_result, list) and len(invalid_purchases_result) > 0 else invalid_purchases_result
     print(f"  🎟️  Invalid purchases (before registration): {invalid_purchases} (should be 0)")
 
     # Check 3: No views before movie release
@@ -692,7 +909,8 @@ def validate_data_consistency(client):
         JOIN cinevibe_movies m ON v.movie_id = m.movie_id
         WHERE v.view_date < m.release_date
     """
-    invalid_movie_views = client.execute(invalid_movie_views_query)[0][0]
+    invalid_movie_views_result = client.execute(invalid_movie_views_query)
+    invalid_movie_views = invalid_movie_views_result[0] if isinstance(invalid_movie_views_result, list) and len(invalid_movie_views_result) > 0 else invalid_movie_views_result
     print(f"  🎬 Invalid movie views (before release): {invalid_movie_views} (should be 0)")
 
     # Check 4: All views have valid like_status
@@ -701,7 +919,8 @@ def validate_data_consistency(client):
         FROM cinevibe_views_likes
         WHERE like_status NOT IN ('like', 'dislike') OR like_status IS NULL OR like_status = ''
     """
-    invalid_like_status = client.execute(invalid_like_status_query)[0][0]
+    invalid_like_status_result = client.execute(invalid_like_status_query)
+    invalid_like_status = invalid_like_status_result[0] if isinstance(invalid_like_status_result, list) and len(invalid_like_status_result) > 0 else invalid_like_status_result
     print(f"  ❤️  Invalid like_status values: {invalid_like_status} (should be 0)")
 
     # Check 5: No purchases after event date
@@ -711,7 +930,8 @@ def validate_data_consistency(client):
         JOIN eventgo_events e ON p.event_id = e.event_id
         WHERE p.purchase_date > e.event_date
     """
-    invalid_event_purchases = client.execute(invalid_event_purchases_query)[0][0]
+    invalid_event_purchases_result = client.execute(invalid_event_purchases_query)
+    invalid_event_purchases = invalid_event_purchases_result[0] if isinstance(invalid_event_purchases_result, list) and len(invalid_event_purchases_result) > 0 else invalid_event_purchases_result
     print(f"  📅 Invalid event purchases (after event date): {invalid_event_purchases} (should be 0)")
 
     print("  ✅ Data validation completed")

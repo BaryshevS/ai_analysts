@@ -1,1 +1,0 @@
-CREATE VIEW INFORMATION_SCHEMA.ENGINES\n(\n    `engine` String,\n    `support` String,\n    `ENGINE` String,\n    `SUPPORT` String\n)\nSQL SECURITY INVOKER\nAS SELECT\n    name AS engine,\n    if(engine = getSetting(\'default_table_engine\'), \'DEFAULT\', \'YES\') AS support,\n    engine AS ENGINE,\n    support AS SUPPORT\nFROM system.table_engines

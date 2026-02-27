@@ -1,1 +1,0 @@
-CREATE TABLE `company-stat`.eventgo_ticket_purchases\n(\n    `user_id` UInt32,\n    `event_id` UInt32,\n    `purchase_date` Date,\n    `amount` Decimal(9, 2),\n    `ticket_quantity` UInt8\n)\nENGINE = MergeTree\nORDER BY (user_id, event_id, purchase_date)\nSETTINGS index_granularity = 8192

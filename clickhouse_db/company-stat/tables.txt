@@ -1,8 +1,0 @@
-billing_log
-cinevibe_movies
-cinevibe_subscriptions_history
-cinevibe_users
-cinevibe_views_likes
-eventgo_events
-eventgo_ticket_purchases
-eventgo_users
