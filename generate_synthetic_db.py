@@ -64,19 +64,20 @@ class ClickHouseHTTPClient:
 
         try:
             if data:
-                # For INSERT queries with data
                 full_query = processed_query
                 if isinstance(data, list) and len(data) > 0:
-                    # Convert data to VALUES format
                     if processed_query.strip().upper().endswith('VALUES'):
                         values_lines = []
                         for row in data:
                             if isinstance(row, (tuple, list)):
-                                # Escape single quotes and wrap strings in single quotes
                                 formatted_values = []
                                 for val in row:
-                                    if isinstance(val, str):
-                                        # Escape single quotes by doubling them
+                                    # Добавляем обработку datetime.date и datetime.datetime
+                                    if isinstance(val, (datetime.date, datetime.datetime)):
+                                        # Преобразуем дату в строку и заключаем в кавычки
+                                        date_str = val.strftime('%Y-%m-%d')
+                                        formatted_values.append(f"'{date_str}'")
+                                    elif isinstance(val, str):
                                         escaped_val = val.replace("'", "''")
                                         formatted_values.append(f"'{escaped_val}'")
                                     elif val is None:
@@ -86,7 +87,6 @@ class ClickHouseHTTPClient:
                                 values_lines.append(f"({', '.join(formatted_values)})")
                         full_query = processed_query + " " + ", ".join(values_lines)
                     else:
-                        # For other INSERT formats
                         full_query = processed_query
 
                 response = requests.post(
@@ -598,8 +598,23 @@ def generate_cinevibe_subscriptions(client):
         num_periods = random.randint(1, 5)
         user_reg_date_result = client.execute("SELECT reg_date FROM cinevibe_users WHERE user_id = {}".format(user_id))
         user_reg_date_str = user_reg_date_result[0] if isinstance(user_reg_date_result, list) and len(user_reg_date_result) > 0 else user_reg_date_result
-        # Convert string date to datetime.date object
-        user_reg_date = datetime.datetime.strptime(str(user_reg_date_str), '%Y-%m-%d').date()
+        # Convert string date to datetime.date object with more robust parsing
+        if isinstance(user_reg_date_str, str):
+            # Handle different date formats that might be returned by ClickHouse
+            try:
+                user_reg_date = datetime.datetime.strptime(user_reg_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                # If parsing fails, try to extract date components
+                import re
+                date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', str(user_reg_date_str))
+                if date_match:
+                    year, month, day = map(int, date_match.groups())
+                    user_reg_date = datetime.date(year, month, day)
+                else:
+                    # Fallback to a default date in the correct range
+                    user_reg_date = datetime.date(2025, 1, 1)
+        else:
+            user_reg_date = user_reg_date_str
 
         current_date = user_reg_date + timedelta(days=random.randint(1, 30))  # Start subscription after registration
 
@@ -682,8 +697,23 @@ def generate_cinevibe_views(client):
     users_dict = {}
     for user in users:
         user_id, reg_date_str = user
-        # Convert string date to datetime.date object
-        reg_date = datetime.datetime.strptime(str(reg_date_str), '%Y-%m-%d').date()
+        # Convert string date to datetime.date object with more robust parsing
+        if isinstance(reg_date_str, str):
+            # Handle different date formats that might be returned by ClickHouse
+            try:
+                reg_date = datetime.datetime.strptime(reg_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                # If parsing fails, try to extract date components
+                import re
+                date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', str(reg_date_str))
+                if date_match:
+                    year, month, day = map(int, date_match.groups())
+                    reg_date = datetime.date(year, month, day)
+                else:
+                    # Fallback to a default date in the correct range
+                    reg_date = datetime.date(2025, 1, 1)
+        else:
+            reg_date = reg_date_str
         users_dict[user_id] = reg_date
 
     like_statuses = ['like', 'dislike']  # Only like or dislike, no empty values
